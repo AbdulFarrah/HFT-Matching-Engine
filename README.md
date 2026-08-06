@@ -166,21 +166,6 @@ The benchmark reports:
 
 The number of generated orders can be specified as a command-line argument. If no argument is provided, the benchmark processes 100,000 orders by default.
 
-## Benchmark
-
-A benchmark program is provided to measure the performance of the matching engine.
-
-The benchmark reports:
-- Orders processed per second
-- Mean latency
-- P50 latency
-- P75 latency
-- P90 latency
-- P99 latency
-- Maximum latency
-
-The number of generated orders can be specified as a command-line argument. If no argument is provided, the benchmark processes 100,000 orders by default.
-
 Example output:
 
 ```text
