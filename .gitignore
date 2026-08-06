@@ -1,0 +1,9 @@
+# Build artifacts
+build/
+
+# Runtime logs
+logs/*.csv
+logs/*.log
+
+# Runtime snapshots
+snapshots/*.json
