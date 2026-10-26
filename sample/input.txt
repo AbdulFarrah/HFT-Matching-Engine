@@ -1,4 +1,8 @@
 #MASTER REGRESSION INPUT
+# Cold start: this cancel is unknown. On the next run it cancels the
+# persisted probe order placed at the end of this file.
+CANCEL AAPL 900
+
 # ==================================================
 # SECTION 1
 # VALIDATION & ERROR HANDLING
@@ -27,6 +31,10 @@ LIMIT BUY 3 CLIENT3 AAPL 100.00 0
 # --------------------------------------------------
 
 LIMIT BUY 4 CLIENT4 AAPL -10.00 5
+
+# Negative and fractional new-order quantities must be rejected.
+LIMIT BUY 6 CLIENT6 AAPL 80.00 -1
+LIMIT BUY 7 CLIENT7 AAPL 79.00 2.5
 
 # --------------------------------------------------
 # Unknown symbol
@@ -62,13 +70,23 @@ LIMIT BUY 100 CLIENT3 GOOG 300.00 10
 # Unknown CANCEL
 # --------------------------------------------------
 
-CANCEL 999
+CANCEL AAPL 999
 
 # --------------------------------------------------
 # Unknown MODIFY
 # --------------------------------------------------
 
-MODIFY 999 PRICE 150.00
+MODIFY AAPL 999 PRICE 150.00
+
+# Unsupported-symbol commands must be ignored without creating a worker queue.
+CANCEL TSLA 999
+MODIFY TSLA 999 PRICE 1
+
+# Invalid modifications must leave this valid order unchanged.
+LIMIT BUY 8 CLIENT8 AAPL 80.00 10
+MODIFY AAPL 8 PRICE -1
+MODIFY AAPL 8 QUANTITY 4.9
+MODIFY AAPL 8 QUANTITY -1
 
 # ==================================================
 # SECTION 2
@@ -154,13 +172,13 @@ LIMIT BUY 301 CLIENT2 AAPL 101.00 8
 # CANCEL existing order
 # --------------------------------------------------
 
-CANCEL 301
+CANCEL AAPL 301
 
 # --------------------------------------------------
 # CANCEL unknown order
 # --------------------------------------------------
 
-CANCEL 999
+CANCEL AAPL 999
 
 # --------------------------------------------------
 # MARKET SELL
@@ -173,21 +191,24 @@ MARKET SELL 302 CLIENT3 AAPL 999.00 5
 # CANCEL already completed order
 # --------------------------------------------------
 
-CANCEL 302
+CANCEL AAPL 302
 
 # --------------------------------------------------
 # MODIFY PRICE
 # Resets priority
 # --------------------------------------------------
 
-MODIFY 300 PRICE 102.00
+MODIFY AAPL 300 PRICE 102.00
 
 # --------------------------------------------------
 # MODIFY QUANTITY decrease
 # Keeps priority
 # --------------------------------------------------
 
-MODIFY 300 QUANTITY 4
+MODIFY AAPL 300 QUANTITY 7
+
+# This requested total is below the five already executed units and is rejected.
+MODIFY AAPL 300 QUANTITY 4
 
 # --------------------------------------------------
 # MODIFY QUANTITY increase
@@ -196,7 +217,7 @@ MODIFY 300 QUANTITY 4
 
 LIMIT BUY 303 CLIENT4 AAPL 102.00 5
 
-MODIFY 300 QUANTITY 8
+MODIFY AAPL 300 QUANTITY 8
 
 # --------------------------------------------------
 # MARKET SELL
@@ -214,13 +235,13 @@ LIMIT BUY 305 CLIENT6 AAPL 105.00 10
 
 MARKET SELL 306 CLIENT7 AAPL 999.00 6
 
-MODIFY 305 QUANTITY 4
+MODIFY AAPL 305 QUANTITY 4
 
 # --------------------------------------------------
 # Unknown MODIFY
 # --------------------------------------------------
 
-MODIFY 999 PRICE 120.00
+MODIFY AAPL 999 PRICE 120.00
 
 # ==================================================
 # SECTION 4
@@ -281,7 +302,7 @@ LIMIT SELL 502 CLIENT3 AAPL 100.00 5
 # CANCEL routing
 # --------------------------------------------------
 
-CANCEL 501
+CANCEL MSFT 501
 
 # --------------------------------------------------
 # MODIFY routing
@@ -289,7 +310,7 @@ CANCEL 501
 
 LIMIT BUY 503 CLIENT4 MSFT 190.00 8
 
-MODIFY 503 PRICE 195.00
+MODIFY MSFT 503 PRICE 195.00
 
 # --------------------------------------------------
 # Duplicate Order ID across symbols
@@ -302,3 +323,6 @@ LIMIT BUY 500 CLIENT5 GOOG 300.00 5
 # --------------------------------------------------
 
 LIMIT SELL 504 CLIENT6 MSFT 195.00 8
+
+# Persisted recovery probe: canceled by the first line on the next run.
+LIMIT BUY 900 CLIENT900 AAPL 50.00 4

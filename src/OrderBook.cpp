@@ -19,7 +19,9 @@ OrderBook::OrderBook(
             "OrderBook created.");
 }
 
-ProcessResult OrderBook::processOrder(Order order)
+ProcessResult OrderBook::processOrder(
+        Order order,
+        uint64_t outputSequence)
 {
     LOG_INFO(
             logger_,
@@ -35,7 +37,7 @@ ProcessResult OrderBook::processOrder(Order order)
                 "Routing BUY order ID=" + std::to_string(order.getId()) +
                 " to matchBuyOrder().");
 
-        matchBuyOrder(order, result);
+        matchBuyOrder(order, result, outputSequence);
     }
     else
     {
@@ -44,7 +46,7 @@ ProcessResult OrderBook::processOrder(Order order)
                 "Routing SELL order ID=" + std::to_string(order.getId()) +
                 " to matchSellOrder().");
 
-        matchSellOrder(order, result);
+        matchSellOrder(order, result, outputSequence);
     }
 
     result.orderRested = (findOrder(order.getId()) != nullptr);
@@ -71,6 +73,10 @@ void OrderBook::restoreOrder(const Order& order)
         auto& orders = buyOrders_[order.getPrice()];
 
         orders.push_back(order);
+        addLevelQuantity(
+                Side::BUY,
+                order.getPrice(),
+                order.getRemainingQuantity());
 
         auto it = std::prev(orders.end());
 
@@ -86,6 +92,10 @@ void OrderBook::restoreOrder(const Order& order)
         auto& orders = sellOrders_[order.getPrice()];
 
         orders.push_back(order);
+        addLevelQuantity(
+                Side::SELL,
+                order.getPrice(),
+                order.getRemainingQuantity());
 
         auto it = std::prev(orders.end());
 
@@ -131,6 +141,10 @@ void OrderBook::cancelOrder(uint64_t orderId)
 
         if (level != buyOrders_.end())
         {
+            removeLevelQuantity(
+                    Side::BUY,
+                    location.price,
+                    location.orderIterator->getRemainingQuantity());
             level->second.erase(location.orderIterator);
 
             LOG_DEBUG(
@@ -155,6 +169,10 @@ void OrderBook::cancelOrder(uint64_t orderId)
 
         if (level != sellOrders_.end())
         {
+            removeLevelQuantity(
+                    Side::SELL,
+                    location.price,
+                    location.orderIterator->getRemainingQuantity());
             level->second.erase(location.orderIterator);
 
             LOG_DEBUG(
@@ -182,7 +200,7 @@ void OrderBook::cancelOrder(uint64_t orderId)
             std::to_string(orderId));
 }
 
-Order* OrderBook::findOrder(uint64_t orderId)
+const Order* OrderBook::findOrder(uint64_t orderId) const
 {
     auto lookup = orderLookup_.find(orderId);
     if (lookup == orderLookup_.end())
@@ -194,7 +212,42 @@ Order* OrderBook::findOrder(uint64_t orderId)
     return &(*lookup->second.orderIterator);
 }
 
-void OrderBook::matchBuyOrder(Order order, ProcessResult& result)
+void OrderBook::updateOrderQuantities(
+        uint64_t orderId,
+        uint64_t quantity,
+        uint64_t remainingQuantity)
+{
+    auto lookup = orderLookup_.find(orderId);
+    if (lookup == orderLookup_.end())
+    {
+        return;
+    }
+
+    Order& order = *lookup->second.orderIterator;
+    const uint64_t oldRemainingQuantity = order.getRemainingQuantity();
+    if (remainingQuantity > oldRemainingQuantity)
+    {
+        addLevelQuantity(
+                lookup->second.side,
+                lookup->second.price,
+                remainingQuantity - oldRemainingQuantity);
+    }
+    else
+    {
+        removeLevelQuantity(
+                lookup->second.side,
+                lookup->second.price,
+                oldRemainingQuantity - remainingQuantity);
+    }
+
+    order.setQuantity(quantity);
+    order.setRemainingQuantity(remainingQuantity);
+}
+
+void OrderBook::matchBuyOrder(
+        Order order,
+        ProcessResult& result,
+        uint64_t outputSequence)
 {
     bool bookChanged = false;
     LOG_DEBUG(
@@ -255,7 +308,8 @@ void OrderBook::matchBuyOrder(Order order, ProcessResult& result)
                 order.getId(),
                 resting->getId(),
                 resting->getPrice(),
-                tradedQuantity);
+                tradedQuantity,
+                outputSequence);
 
         LOG_TRADE(
                 logger_,
@@ -269,6 +323,10 @@ void OrderBook::matchBuyOrder(Order order, ProcessResult& result)
                 order.getRemainingQuantity() - tradedQuantity);
         resting->setRemainingQuantity(
                 resting->getRemainingQuantity() - tradedQuantity);
+        removeLevelQuantity(
+                Side::SELL,
+                sellLevel->first,
+                tradedQuantity);
         bookChanged = true;
 
         if (order.getRemainingQuantity() > 0)
@@ -316,6 +374,10 @@ void OrderBook::matchBuyOrder(Order order, ProcessResult& result)
 
         auto& orders = buyOrders_[order.getPrice()];
         orders.push_back(order);
+        addLevelQuantity(
+                Side::BUY,
+                order.getPrice(),
+                order.getRemainingQuantity());
         bookChanged = true;
         auto it = std::prev(orders.end());
 
@@ -342,7 +404,10 @@ void OrderBook::matchBuyOrder(Order order, ProcessResult& result)
     }
 }
 
-void OrderBook::matchSellOrder(Order order,ProcessResult& result)
+void OrderBook::matchSellOrder(
+        Order order,
+        ProcessResult& result,
+        uint64_t outputSequence)
 {
     bool bookChanged = false;
     LOG_DEBUG(
@@ -403,7 +468,8 @@ void OrderBook::matchSellOrder(Order order,ProcessResult& result)
                 resting->getId(),
                 order.getId(),
                 resting->getPrice(),
-                tradedQuantity);
+                tradedQuantity,
+                outputSequence);
 
         LOG_TRADE(
                 logger_,
@@ -418,6 +484,10 @@ void OrderBook::matchSellOrder(Order order,ProcessResult& result)
 
         resting->setRemainingQuantity(
                 resting->getRemainingQuantity() - tradedQuantity);
+        removeLevelQuantity(
+                Side::BUY,
+                buyLevel->first,
+                tradedQuantity);
         bookChanged = true;
         if (order.getRemainingQuantity() > 0)
         {
@@ -463,6 +533,10 @@ void OrderBook::matchSellOrder(Order order,ProcessResult& result)
 
         auto& orders = sellOrders_[order.getPrice()];
         orders.push_back(order);
+        addLevelQuantity(
+                Side::SELL,
+                order.getPrice(),
+                order.getRemainingQuantity());
         bookChanged = true;
         auto it = std::prev(orders.end());
 
@@ -601,6 +675,63 @@ const std::string& OrderBook::getSymbol() const
     return symbol_;
 }
 
+uint64_t OrderBook::getBestBidQuantity() const
+{
+    if (buyOrders_.empty())
+    {
+        return 0;
+    }
+
+    const auto quantity = buyLevelQuantities_.find(
+            buyOrders_.begin()->first);
+    return quantity == buyLevelQuantities_.end() ? 0 : quantity->second;
+}
+
+uint64_t OrderBook::getBestAskQuantity() const
+{
+    if (sellOrders_.empty())
+    {
+        return 0;
+    }
+
+    const auto quantity = sellLevelQuantities_.find(
+            sellOrders_.begin()->first);
+    return quantity == sellLevelQuantities_.end() ? 0 : quantity->second;
+}
+
+void OrderBook::addLevelQuantity(
+        Side side,
+        double price,
+        uint64_t quantity)
+{
+    auto& quantities =
+        side == Side::BUY ? buyLevelQuantities_ : sellLevelQuantities_;
+    quantities[price] += quantity;
+}
+
+void OrderBook::removeLevelQuantity(
+        Side side,
+        double price,
+        uint64_t quantity)
+{
+    auto& quantities =
+        side == Side::BUY ? buyLevelQuantities_ : sellLevelQuantities_;
+    auto level = quantities.find(price);
+    if (level == quantities.end())
+    {
+        return;
+    }
+
+    if (quantity >= level->second)
+    {
+        quantities.erase(level);
+    }
+    else
+    {
+        level->second -= quantity;
+    }
+}
+
 void OrderBook::publishMarketData()
 {
     marketDataPublisher_.publish(*this);
@@ -615,5 +746,7 @@ void OrderBook::clear()
 {
     buyOrders_.clear();
     sellOrders_.clear();
+    buyLevelQuantities_.clear();
+    sellLevelQuantities_.clear();
     orderLookup_.clear();
 }

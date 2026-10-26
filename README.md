@@ -2,7 +2,7 @@
 
 A production-oriented High Frequency Trading (HFT) Matching Engine implemented in **C++20**. The engine supports multiple symbols, deterministic order matching using **Price-Time Priority**, concurrent processing through **one worker thread per symbol**, execution logging, market data publication, snapshot recovery, benchmarking, and comprehensive unit testing.
 
-The project is designed to emphasize clean architecture, efficient data structures, thread safety, and low-latency order processing while remaining modular and easy to extend.
+The project emphasizes clear component boundaries, price-time matching, concurrent per-symbol processing, and reproducible output.
 
 ## Features
 
@@ -46,8 +46,8 @@ The engine is divided into independent components, each with a single responsibi
 - **Order** – Represents an individual order and stores its attributes and execution state.
 - **Logger** – Records debug messages and trade executions in a thread-safe manner.
 - **MarketDataPublisher** – Publishes the latest best bid and ask whenever the order book changes.
-- **SnapshotManager** – Saves and restores the complete engine state using JSON snapshots.
-- **OutputWriter** – Prints the final state of each order book.
+- **SnapshotManager** – Saves active orders and the engine timestamp, and restores them on startup.
+- **OutputWriter** – Serializes trade records and prints the final state of each order book.
 
 Each symbol owns its own `OrderBook`, request queue, and worker thread, allowing different symbols to be processed concurrently while ensuring deterministic processing within each symbol.
 
@@ -58,8 +58,8 @@ Each symbol owns its own `OrderBook`, request queue, and worker thread, allowing
 3. Each symbol's worker thread processes requests sequentially.
 4. The order is matched against the opposite side of the order book using Price-Time Priority.
 5. Any remaining quantity is either added to the book or cancelled, depending on the order type.
-6. After every change, market data is published and trade executions are logged.
-7. Once all input has been processed, the final order books are printed and a snapshot of the engine state is saved.
+6. After each book change, market data is published and executions are logged.
+7. After all workers become idle, trade records are written in input sequence, the final books are printed, and a snapshot is saved.
 
 ## Threading Model
 
@@ -69,7 +69,7 @@ The engine follows a **multiple producer, single consumer per symbol** design.
 - Each symbol owns a dedicated worker thread and request queue.
 - Requests for the same symbol are processed sequentially, preserving deterministic matching.
 - Requests for different symbols can be processed concurrently without blocking each other.
-- Shared components such as the logger and market data publisher are protected using mutexes to ensure thread safety.
+- Shared logging, market-data, and output components synchronize access across worker threads. Trade records are buffered until workers finish so cross-symbol output follows input sequence.
 
 ## Data Structures
 
@@ -78,6 +78,7 @@ The engine uses data structures that provide efficient order matching while main
 - `std::map` stores price levels, allowing the best bid and ask to be accessed efficiently.
 - `std::list` stores orders at each price level, preserving FIFO order and enabling constant-time insertion and removal.
 - `std::unordered_map` provides fast lookup of active orders, order books, and order-to-symbol mappings.
+- Per-price-level cached quantities let market-data publication report best-level sizes without scanning every order at that level.
 - `std::queue` stores pending requests for each symbol and preserves arrival order.
 - `std::unordered_set` is used for duplicate order detection and tracking symbols that received requests.
 
@@ -120,14 +121,14 @@ The engine supports modification of both price and quantity.
 
 ## Snapshot & Recovery
 
-The engine periodically saves its state as a JSON snapshot.
+After each input batch, the engine saves a JSON snapshot. The executable loads `../snapshots/snapshot.json` at startup when that file exists; otherwise it starts with empty books.
 
 The snapshot contains:
 - Engine timestamp
 - All active buy orders
 - All active sell orders
 
-On startup, the engine can restore its state from a previously saved snapshot, rebuilding the order books, active order mappings, and timestamp counter. Trading can continue normally after recovery without losing price-time priority among the restored orders.
+Recovery rebuilds order books, active-order mappings, cached quote quantities, and the timestamp counter. Snapshot writes go to a temporary file and are renamed into place after a successful write; failures are logged, leaving the previous snapshot intact when replacement fails.
 
 ## Logging
 
@@ -138,6 +139,7 @@ The engine maintains separate logs for different purposes:
 - **market_data.csv** – Records the latest best bid and ask after every order book update.
 
 Logging is thread-safe to support concurrent processing across multiple symbol worker threads.
+When run from `build/`, these files are written under `../logs/`. Generated log and snapshot files are ignored by Git; the tracked `.gitkeep` files retain the directories.
 
 ## Market Data
 
@@ -149,7 +151,7 @@ Each update contains:
 - Best Ask
 - Ask Quantity
 
-The latest market data for each symbol is written to `market_data.csv`. Updates are synchronized to ensure thread-safe publishing when multiple symbol workers are active.
+The latest market data for each symbol is written to `market_data.csv`. Updates are synchronized, and cached per-price totals make best-level quantity lookup expected O(1), independent of the number of orders at that level.
 
 ## Benchmark
 
@@ -166,24 +168,24 @@ The benchmark reports:
 
 The number of generated orders can be specified as a command-line argument. If no argument is provided, the benchmark processes 100,000 orders by default.
 
-Example output:
+Example output from a local run of the default 100,000-order benchmark:
 
 ```text
 Orders processed : 100000
-Orders/sec       : 56978.04
-Mean latency(ns) : 215881697.49
-P50              : 222012700
-P75              : 332632786
-P90              : 373988516
-P99              : 418579816
-Max              : 423499018
+Orders/sec       : 49449.30
+Mean latency(ns) : 199494972.74
+P50              : 189104580
+P75              : 293489622
+P90              : 393129700
+P99              : 456828008
+Max              : 460325923
 ```
 
-> **Note:** Benchmark results depend on the hardware, operating system, compiler optimizations, and system load. The values above are from a sample run and may vary on different machines.
+> **Note:** Benchmark results depend on hardware, operating system, compiler optimizations, and system load. These values are a reference run, not a performance guarantee.
 
 ## Unit Tests
 
-The project includes **43 GoogleTest unit tests** covering the core functionality of the matching engine.
+The project includes **53 GoogleTest unit tests** covering the core functionality of the matching engine.
 
 The tests verify:
 - Order creation and state updates
@@ -195,32 +197,40 @@ The tests verify:
 - Self-trade prevention
 - Invalid input handling
 - Snapshot save and recovery
+- Snapshot write failure handling and restored market-data publication
+- Cached best-level quantity maintenance across book mutations
+- Deterministic multi-symbol trade output and concurrent logger toggling
 - Order routing across multiple symbols
 
 ## Time & Space Complexity
 
-| Operation           | Time Complexity |
-|---------------------|-----------------|
-| Add Order           | O(log P)        |
-| Cancel Order        | O(log P)        |
-| Modify Order        | O(log P)        |
-| Find Order          | O(1)            |
-| Best Bid / Best Ask | O(1)            |
-| Match Order         | O(K × log P)    |
+| Operation                         | Time Complexity |
+|-----------------------------------|-----------------|
+| Rest order at a price level       | O(log P)        |
+| Cancel order                      | O(log P)        |
+| Price modification                | O(log P)        |
+| Quantity-only modification        | Expected O(1)   |
+| Active order lookup               | Expected O(1)   |
+| Best price and cached level size  | Expected O(1)   |
+| Match order                       | O(log P + R + K + S) |
 
 Where:
 - **P** = Number of price levels.
-- **K** = Number of resting orders matched by the incoming order.
+- **R** = Number of price levels visited by the match.
+- **K** = Number of resting orders filled.
+- **S** = Total self-trade-prevention list checks; checks repeated while matching at a level are included.
+
+The per-batch trade-output sort takes O(T log T), where **T** is the number of trades in that batch.
 
 ### Space Complexity
 
-- **Order Book:** O(N)
+- **Order Book and per-level totals:** O(N + P)
 - **Order Lookup Table:** O(N)
-- **Worker Queues:** O(R)
+- **Worker Queues:** O(Q)
 
 Where:
 - **N** = Number of active orders.
-- **R** = Number of pending requests waiting to be processed.
+- **Q** = Number of pending requests waiting to be processed.
 
 ## Build & Run
 
@@ -233,10 +243,8 @@ Where:
 ### Build
 
 ```bash
-mkdir build
-cd build
-cmake ..
-cmake --build .
+cmake -S . -B build
+cmake --build build --target matching_engine unit_tests benchmark -j2
 ```
 
 ### Run the Matching Engine
@@ -245,7 +253,7 @@ cmake --build .
 ./matching_engine <input_file> <output_file>
 ```
 
-Example:
+Run from `build/` so the relative `../logs/` and `../snapshots/` paths point into the repository:
 
 ```bash
 ./matching_engine ../sample/input.txt ../sample/output.txt
@@ -271,7 +279,15 @@ To benchmark a different number of orders:
 
 ### Snapshot Recovery
 
-The engine supports restoring its previous state from a saved snapshot. This can be enabled by uncommenting the snapshot loading code in `main.cpp` before processing new orders.
+Snapshot loading is enabled in the main executable. To reproduce the checked-in cold-start and recovery outputs, run from `build/`:
+
+```bash
+rm -f ../snapshots/snapshot.json ../snapshots/snapshot.json.tmp
+./matching_engine ../sample/input.txt ../sample/output.txt
+./matching_engine ../sample/input.txt ../sample/recovery_output.txt
+```
+
+The master input includes a recovery probe: the cold run leaves order 900 resting in the snapshot; the warm run cancels that restored order before the repeated order ID is rejected. The first run should match `sample/output.txt`; the second should match `sample/recovery_output.txt`.
 
 ## Project Structure
 
@@ -292,9 +308,9 @@ HFT/
 - **benchmark/** - Benchmark program for measuring engine performance.
 - **include/** - Header files.
 - **src/** - Source code implementation.
-- **logs/** - Debug, execution, and market data logs.
-- **sample/** - Sample input and output files.
-- **snapshots/** - JSON snapshots used for state persistence and recovery.
+- **logs/** - Runtime debug, execution, and market-data files (generated and Git-ignored).
+- **sample/** - Master regression input plus cold-start and recovery outputs.
+- **snapshots/** - Runtime JSON snapshots and temporary snapshot files (generated and Git-ignored).
 - **tests/** - GoogleTest unit tests.
 
 ## Design Decisions & Trade-offs
@@ -304,12 +320,13 @@ HFT/
 - Separate order books are maintained for each symbol to eliminate contention between unrelated instruments and simplify synchronization.
 
 - Price levels are stored using `std::map`, while orders at each price level are stored in `std::list`. This combination provides efficient price lookup while preserving FIFO ordering.
+- Cached per-price quantity totals are updated on restore, resting, fills, cancels, quantity modifications, and book clearing.
 
 - Active orders are indexed using hash maps to support fast order lookup during cancel and modify operations.
 
 - Order books are created during engine initialization instead of on demand, avoiding concurrent modifications to the order book container and simplifying the threading model.
 
-- Logger and MarketDataPublisher are protected with mutexes to ensure thread-safe access from multiple worker threads.
+- Logger enablement is atomic; log writes, market-data writes, and output writes are synchronized across workers.
 
 - Engine state is persisted as JSON snapshots, allowing recovery after restart without rebuilding the order book manually.
 

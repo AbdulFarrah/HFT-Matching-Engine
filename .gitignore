@@ -7,3 +7,4 @@ logs/*.log
 
 # Runtime snapshots
 snapshots/*.json
+snapshots/*.tmp

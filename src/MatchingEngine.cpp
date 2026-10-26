@@ -1,8 +1,28 @@
 #include "MatchingEngine.hpp"
 
+#include <algorithm>
+#include <charconv>
+#include <cmath>
 #include <sstream>
 #include <string>
 #include <iostream>
+#include <system_error>
+
+namespace
+{
+    bool parseUnsignedQuantity(
+            const std::string& text,
+            uint64_t& quantity)
+    {
+        const auto [end, error] = std::from_chars(
+                text.data(),
+                text.data() + text.size(),
+                quantity);
+
+        return error == std::errc{} &&
+            end == text.data() + text.size();
+    }
+}
 
 MatchingEngine::MatchingEngine(
         Logger& logger,
@@ -25,7 +45,12 @@ MatchingEngine::MatchingEngine(
                 outputWriter_,
                 marketDataPublisher_);
 
-        workers_[symbol].thread =
+        workers_.try_emplace(symbol);
+    }
+
+    for (const auto& symbol : validSymbols_)
+    {
+        workers_.at(symbol).thread =
             std::thread(
                     &MatchingEngine::workerLoop,
                     this,
@@ -39,6 +64,7 @@ MatchingEngine::MatchingEngine(
 
 void MatchingEngine::processOrders(std::istream& input,std::ostream& output)
 {
+    outputWriter_.setOutput(output);
     LOG_INFO(logger_, "Started processing input stream.");
     uint64_t processedOrders = 0;
     std::string line;
@@ -88,8 +114,8 @@ void MatchingEngine::processOrders(std::istream& input,std::ostream& output)
             std::string symbol;
             uint64_t orderId;
             std::string field;
-            double value;
-            if (!(modifyStream >> symbol >> orderId >> field >> value))
+            std::string valueText;
+            if (!(modifyStream >> symbol >> orderId >> field >> valueText))
             {
                 LOG_ERROR(
                         logger_,
@@ -102,8 +128,45 @@ void MatchingEngine::processOrders(std::istream& input,std::ostream& output)
             request.type = RequestType::MODIFY;
             request.orderId = orderId;
             request.field = field;
-            request.value = value;
             request.symbol = symbol;
+
+            if (field == "QUANTITY")
+            {
+                if (!parseUnsignedQuantity(valueText, request.quantityValue))
+                {
+                    LOG_WARNING(
+                            logger_,
+                            "Rejected quantity modification for order ID=" +
+                            std::to_string(orderId) +
+                            ". Quantity must be an unsigned integer.");
+                    continue;
+                }
+            }
+            else
+            {
+                std::istringstream valueStream(valueText);
+                std::string extra;
+                if (!(valueStream >> request.value) || (valueStream >> extra))
+                {
+                    LOG_WARNING(
+                            logger_,
+                            "Rejected invalid modification value for order ID=" +
+                            std::to_string(orderId));
+                    continue;
+                }
+
+                if (field == "PRICE" &&
+                        (!std::isfinite(request.value) || request.value < 0))
+                {
+                    LOG_WARNING(
+                            logger_,
+                            "Rejected price modification for order ID=" +
+                            std::to_string(orderId) +
+                            ". Price must be finite and nonnegative.");
+                    continue;
+                }
+            }
+
             enqueueRequest(request);
 
             continue;
@@ -116,7 +179,7 @@ void MatchingEngine::processOrders(std::istream& input,std::ostream& output)
         std::string clientId;
         std::string symbol;
         double price;
-        uint64_t quantity;
+        std::string quantityText;
 
         if (!(iss >> orderType
                     >> side
@@ -124,9 +187,20 @@ void MatchingEngine::processOrders(std::istream& input,std::ostream& output)
                     >> clientId
                     >> symbol
                     >> price
-                    >> quantity))
+                    >> quantityText))
         {
             LOG_ERROR(logger_, "Malformed order: " + line);
+            continue;
+        }
+
+        uint64_t quantity;
+        if (!parseUnsignedQuantity(quantityText, quantity))
+        {
+            LOG_WARNING(
+                    logger_,
+                    "Rejected order ID=" +
+                    std::to_string(orderId) +
+                    ". Quantity must be an unsigned integer.");
             continue;
         }
 
@@ -189,13 +263,13 @@ void MatchingEngine::processOrders(std::istream& input,std::ostream& output)
             continue;
         }
 
-        if (price < 0)
+        if (!std::isfinite(price) || price < 0)
         {
             LOG_WARNING(
                     logger_,
                     "Rejected order ID=" +
                     std::to_string(orderId) +
-                    ". Negative price.");
+                    ". Price must be finite and nonnegative.");
 
             continue;
         }
@@ -274,6 +348,7 @@ void MatchingEngine::processOrders(std::istream& input,std::ostream& output)
                 return allWorkersIdle();
                 });
     }
+    outputWriter_.flushTrades();
     printBooks();
     LOG_INFO(
             logger_,
@@ -282,18 +357,31 @@ void MatchingEngine::processOrders(std::istream& input,std::ostream& output)
             + " orders processed, "
             + std::to_string(orderBooks_.size())
             + " active symbol(s).");
-    snapshotManager_.save(*this);
-
-    LOG_INFO(
-            logger_,
-            "Snapshot written successfully.");
+    std::string snapshotError;
+    if (snapshotManager_.save(*this, snapshotError))
+    {
+        LOG_INFO(
+                logger_,
+                "Snapshot written successfully.");
+    }
+    else
+    {
+        LOG_ERROR(
+                logger_,
+                "Snapshot write failed: " + snapshotError);
+    }
     LOG_INFO(logger_, "Finished processing input stream.");
     LOG_INFO(logger_, "processOrders returning");
 }
 
 void MatchingEngine::printBooks()
 {
-    for (const auto& symbol : touchedSymbols_)
+    std::vector<std::string> symbols(
+            touchedSymbols_.begin(),
+            touchedSymbols_.end());
+    std::sort(symbols.begin(), symbols.end());
+
+    for (const auto& symbol : symbols)
     {
         outputWriter_.beginSymbol(symbol);
 
@@ -374,6 +462,8 @@ void MatchingEngine::loadSnapshot(
             orderIdToSymbol_[order.getId()] =
                 symbol;
         }
+
+        marketDataPublisher_.publish(book);
     }
 
     LOG_INFO(
@@ -484,7 +574,7 @@ void MatchingEngine::processRequest(
                 symbolIt->second);
 
         OrderBook& book = orderBooks_.at(request.symbol);
-        Order* existing = book.findOrder(request.orderId);
+        const Order* existing = book.findOrder(request.orderId);
 
         if (existing == nullptr)
         {
@@ -517,15 +607,16 @@ void MatchingEngine::processRequest(
                     existing->getSide(),
                     existing->getType(),
                     request.value,
-                    existing->getRemainingQuantity(),
+                    existing->getQuantity(),
                     timestamp_++);
+            updated.setRemainingQuantity(existing->getRemainingQuantity());
 
             OrderBook& book = orderBooks_.at(request.symbol);
 
             book.cancelOrder(request.orderId);
             orderIdToSymbol_.erase(symbolIt);
 
-            ProcessResult result = book.processOrder(updated);
+            ProcessResult result = book.processOrder(updated, request.sequence);
 
             if (result.orderRested)
             {
@@ -550,8 +641,7 @@ void MatchingEngine::processRequest(
         }
         else if (request.field == "QUANTITY")
         {
-            uint64_t newQuantity =
-                static_cast<uint64_t>(request.value);
+            uint64_t newQuantity = request.quantityValue;
 
             uint64_t alreadyTraded =
                 existing->getQuantity() -
@@ -581,16 +671,29 @@ void MatchingEngine::processRequest(
             uint64_t newRemaining =
                 newQuantity - alreadyTraded;
 
+            if (newRemaining == 0)
+            {
+                LOG_INFO(
+                        logger_,
+                        "Quantity modification leaves no remaining quantity; "
+                        "cancelling order ID=" +
+                        std::to_string(request.orderId));
+
+                book.cancelOrder(request.orderId);
+                orderIdToSymbol_.erase(symbolIt);
+            }
             // Quantity decrease -> retain priority.
-            if (newQuantity <= existing->getQuantity())
+            else if (newQuantity <= existing->getQuantity())
             {
                 LOG_INFO(
                         logger_,
                         "Quantity decrease. Time priority retained for order ID=" +
                         std::to_string(request.orderId));
 
-                existing->setQuantity(newQuantity);
-                existing->setRemainingQuantity(newRemaining);
+                book.updateOrderQuantities(
+                        request.orderId,
+                        newQuantity,
+                        newRemaining);
                 book.notifyMarketDataUpdate();
             }
             // Quantity increase -> reset priority.
@@ -618,7 +721,7 @@ void MatchingEngine::processRequest(
                 book.cancelOrder(request.orderId);
                 orderIdToSymbol_.erase(symbolIt);
 
-                ProcessResult result = book.processOrder(updated);
+                ProcessResult result = book.processOrder(updated, request.sequence);
 
                 if (result.orderRested)
                 {
@@ -663,7 +766,7 @@ void MatchingEngine::processRequest(
 
         OrderBook& book = orderBooks_.at(order.getSymbol());
         ProcessResult result =
-            book.processOrder(order);
+            book.processOrder(order, request.sequence);
 
         if (result.orderRested)
         {
@@ -743,7 +846,7 @@ void MatchingEngine::workerLoop(const std::string& symbol)
             std::to_string(
                 std::hash<std::thread::id>{}(std::this_thread::get_id())));
 
-    SymbolWorker& worker = workers_[symbol];
+    SymbolWorker& worker = workers_.at(symbol);
 
     std::unique_lock lock(worker.mutex);
 
@@ -787,9 +890,15 @@ void MatchingEngine::workerLoop(const std::string& symbol)
         processRequest(request);
 
         lock.lock();
-
         worker.busy = false;
-        completionCondition_.notify_one();
+        lock.unlock();
+
+        {
+            std::lock_guard completionLock(completionMutex_);
+            completionCondition_.notify_one();
+        }
+
+        lock.lock();
     }
 }
 
@@ -807,8 +916,20 @@ void MatchingEngine::enqueueRequest(EngineRequest& request)
         symbol = request.symbol;
     }
 
+    auto workerIt = workers_.find(symbol);
+    if (workerIt == workers_.end())
+    {
+        LOG_WARNING(
+                logger_,
+                "Request ignored. Unsupported symbol \"" +
+                symbol +
+                "\".");
+        return;
+    }
+
     touchedSymbols_.insert(symbol);
-    SymbolWorker& worker = workers_[symbol];
+    request.sequence = nextRequestSequence_++;
+    SymbolWorker& worker = workerIt->second;
 
     {
         std::lock_guard lock(worker.mutex);

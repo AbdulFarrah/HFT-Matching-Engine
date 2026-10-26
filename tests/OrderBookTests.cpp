@@ -46,13 +46,66 @@ TEST(OrderBookTest, LimitOrderRests)
     EXPECT_TRUE(result.orderRested);
     EXPECT_TRUE(result.completedOrders.empty());
 
-    Order* resting = book.findOrder(1);
+    const Order* resting = book.findOrder(1);
 
     ASSERT_NE(resting, nullptr);
 
     EXPECT_EQ(resting->getId(), 1);
     EXPECT_EQ(resting->getRemainingQuantity(), 10);
     EXPECT_EQ(resting->getPrice(), 100.0);
+}
+
+TEST(OrderBookTest, BestLevelQuantitiesTrackEveryBookMutation)
+{
+    Logger logger;
+    OutputWriter outputwriter(output);
+    MarketDataPublisher marketDataPublisher(logger);
+    OrderBook book(
+            "AAPL",
+            logger,
+            outputwriter,
+            marketDataPublisher);
+
+    book.processOrder(createOrder(1, "CLIENT1", "AAPL", Side::BUY,
+                OrderType::LIMIT, 100.0, 10));
+    book.processOrder(createOrder(2, "CLIENT2", "AAPL", Side::BUY,
+                OrderType::LIMIT, 100.0, 7));
+    EXPECT_EQ(book.getBestBidQuantity(), 17);
+
+    book.processOrder(createOrder(3, "CLIENT3", "AAPL", Side::SELL,
+                OrderType::LIMIT, 100.0, 4));
+    EXPECT_EQ(book.getBestBidQuantity(), 13);
+
+    book.cancelOrder(2);
+    EXPECT_EQ(book.getBestBidQuantity(), 6);
+
+    book.updateOrderQuantities(1, 12, 8);
+    EXPECT_EQ(book.getBestBidQuantity(), 8);
+
+    book.restoreOrder(createOrder(4, "CLIENT4", "AAPL", Side::BUY,
+                OrderType::LIMIT, 100.0, 3));
+    EXPECT_EQ(book.getBestBidQuantity(), 11);
+
+    book.restoreOrder(createOrder(5, "CLIENT5", "AAPL", Side::SELL,
+                OrderType::LIMIT, 110.0, 8));
+    book.restoreOrder(createOrder(6, "CLIENT6", "AAPL", Side::SELL,
+                OrderType::LIMIT, 110.0, 2));
+    EXPECT_EQ(book.getBestAskQuantity(), 10);
+
+    book.processOrder(createOrder(7, "CLIENT7", "AAPL", Side::BUY,
+                OrderType::LIMIT, 110.0, 3));
+    EXPECT_EQ(book.getBestAskQuantity(), 7);
+
+    book.cancelOrder(6);
+    EXPECT_EQ(book.getBestAskQuantity(), 5);
+
+    book.processOrder(createOrder(8, "CLIENT8", "AAPL", Side::BUY,
+                OrderType::LIMIT, 110.0, 5));
+    EXPECT_EQ(book.getBestAskQuantity(), 0);
+
+    book.clear();
+    EXPECT_EQ(book.getBestBidQuantity(), 0);
+    EXPECT_EQ(book.getBestAskQuantity(), 0);
 }
 
 TEST(OrderBookTest, LimitOrderMatches)
@@ -184,7 +237,7 @@ TEST(OrderBookTest, PartialFill)
 
     EXPECT_FALSE(result.orderRested);
 
-    Order* remaining = book.findOrder(1);
+    const Order* remaining = book.findOrder(1);
 
     ASSERT_NE(remaining, nullptr);
 
@@ -429,7 +482,7 @@ TEST(OrderBookTest, FindExistingOrder)
             marketDataPublisher);
     book.processOrder(createOrder());
 
-    Order* order = book.findOrder(1);
+    const Order* order = book.findOrder(1);
 
     ASSERT_NE(order, nullptr);
 

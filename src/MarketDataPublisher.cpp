@@ -29,15 +29,8 @@ void MarketDataPublisher::publish(const OrderBook& book)
 
     if (!book.getBuyLevels().empty())
     {
-        const auto& [price, orders] =
-            *book.getBuyLevels().begin();
-
-        bestBid = price;
-
-        for (const auto& order : orders)
-        {
-            bidQty += order.getRemainingQuantity();
-        }
+        bestBid = book.getBuyLevels().begin()->first;
+        bidQty = book.getBestBidQuantity();
     }
 
     double bestAsk = 0.0;
@@ -45,15 +38,8 @@ void MarketDataPublisher::publish(const OrderBook& book)
 
     if (!book.getSellLevels().empty())
     {
-        const auto& [price, orders] =
-            *book.getSellLevels().begin();
-
-        bestAsk = price;
-
-        for (const auto& order : orders)
-        {
-            askQty += order.getRemainingQuantity();
-        }
+        bestAsk = book.getSellLevels().begin()->first;
+        askQty = book.getBestAskQuantity();
     }
 
     marketDataLog_

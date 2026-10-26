@@ -2,6 +2,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <exception>
+#include <system_error>
 
 #include <nlohmann/json.hpp>
 
@@ -15,11 +17,26 @@ SnapshotManager::SnapshotManager(const std::string& fileName)
 {
 }
 
-void SnapshotManager::save(const MatchingEngine& engine) const
+bool SnapshotManager::save(
+        const MatchingEngine& engine,
+        std::string& error) const
 {
     const std::filesystem::path snapshotDirectory = "../snapshots";
+    const std::filesystem::path snapshotPath =
+        snapshotDirectory / fileName_;
+    std::filesystem::path temporaryPath = snapshotPath;
+    temporaryPath += ".tmp";
 
-    std::filesystem::create_directories(snapshotDirectory);
+    std::error_code filesystemError;
+    std::filesystem::create_directories(
+            snapshotDirectory,
+            filesystemError);
+    if (filesystemError)
+    {
+        error = "cannot create snapshot directory: " +
+            filesystemError.message();
+        return false;
+    }
 
     json snapshot;
 
@@ -35,9 +52,61 @@ void SnapshotManager::save(const MatchingEngine& engine) const
 
     snapshot["symbols"] = symbols;
 
-    std::ofstream file(snapshotDirectory / fileName_);
+    std::string serializedSnapshot;
+    try
+    {
+        serializedSnapshot = snapshot.dump(4);
+    }
+    catch (const std::exception& exception)
+    {
+        error = "cannot serialize snapshot: ";
+        error += exception.what();
+        return false;
+    }
 
-    file << snapshot.dump(4);
+    std::ofstream file(
+            temporaryPath,
+            std::ios::out | std::ios::trunc);
+    if (!file)
+    {
+        error = "cannot open temporary snapshot file " +
+            temporaryPath.string();
+        return false;
+    }
+
+    file << serializedSnapshot;
+    file.flush();
+    if (!file)
+    {
+        error = "failed writing temporary snapshot file " +
+            temporaryPath.string();
+        file.close();
+        std::filesystem::remove(temporaryPath, filesystemError);
+        return false;
+    }
+    file.close();
+    if (!file)
+    {
+        error = "failed closing temporary snapshot file " +
+            temporaryPath.string();
+        std::filesystem::remove(temporaryPath, filesystemError);
+        return false;
+    }
+
+    std::filesystem::rename(
+            temporaryPath,
+            snapshotPath,
+            filesystemError);
+    if (filesystemError)
+    {
+        error = "cannot replace snapshot file " + snapshotPath.string() +
+            ": " + filesystemError.message();
+        std::filesystem::remove(temporaryPath, filesystemError);
+        return false;
+    }
+
+    error.clear();
+    return true;
 }
 
 void SnapshotManager::load(MatchingEngine& engine)

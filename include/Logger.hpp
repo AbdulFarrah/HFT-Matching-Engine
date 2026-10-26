@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
 #include <fstream>
 #include <string>
 #include <mutex>
@@ -39,7 +40,7 @@ class Logger
         std::ofstream tradeLog_;
         std::ofstream debugLog_;
         std::mutex logMutex_;
-        bool enabled_ = true;
+        std::atomic<bool> enabled_{true};
 };
 
 #define LOG_DEBUG(logger, message) \

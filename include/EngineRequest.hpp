@@ -34,5 +34,7 @@ struct EngineRequest
     std::string field;
 
     double value = 0.0;
+    uint64_t quantityValue = 0;
+    uint64_t sequence = 0;
     std::chrono::steady_clock::time_point enqueueTime;
 };

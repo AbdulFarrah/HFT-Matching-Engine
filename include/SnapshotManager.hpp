@@ -9,7 +9,7 @@ class SnapshotManager
     public:
         explicit SnapshotManager(const std::string& fileName);
 
-        void save(const MatchingEngine& engine) const;
+        bool save(const MatchingEngine& engine, std::string& error) const;
         void load(MatchingEngine& engine);
 
     private:

@@ -64,6 +64,7 @@ class MatchingEngine
         std::unordered_map<uint64_t, std::string> orderIdToSymbol_;
         // Global timestamp.
         uint64_t timestamp_ = 0;
+        uint64_t nextRequestSequence_ = 1;
         Logger& logger_;
         OutputWriter& outputWriter_;
         SnapshotManager& snapshotManager_;

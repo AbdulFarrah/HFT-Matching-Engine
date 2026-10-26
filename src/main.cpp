@@ -34,18 +34,8 @@ int main(int argc, char* argv[])
     SnapshotManager snapshotManager("snapshot.json");
     MarketDataPublisher marketDataPublisher(logger);
     MatchingEngine engine(logger, outputWriter,snapshotManager,marketDataPublisher);
-    engine.processOrders(input);
+    snapshotManager.load(engine);
+    engine.processOrders(input, output);
     LOG_INFO(logger,"Matching Engine finished successfully.");
-    /*
-       LOG_INFO(logger,"Recover Engine started.");
-       MatchingEngine recoveredEngine(
-       logger,
-       outputWriter,
-       snapshotManager,marketDataPublisher);
-       snapshotManager.load(recoveredEngine);
-       outputWriter.beginSymbol("RECOVERED ENGINE");
-       recoveredEngine.printBooks();
-       LOG_INFO(logger,"Recover Engine finished successfully.");
-     */
     return 0;
 }
